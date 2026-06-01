@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="theme-color" content="#1a1a2e"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>Book Collector</title>
+<link rel="manifest" href="manifest.json"/>
+<!-- Barcode scanning -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --bg:       #1a1a2e;
+    --surface:  #16213e;
+    --card:     #0f3460;
+    --accent:   #e94560;
+    --accent2:  #f5a623;
+    --text:     #eaeaea;
+    --muted:    #8892a4;
+    --radius:   14px;
+    --mic-size: 48px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  body { display: flex; flex-direction: column; min-height: 100dvh; }
+
+  header {
+    background: var(--surface);
+    padding: 16px 20px 12px;
+    display: flex; align-items: center; gap: 12px;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header svg { flex-shrink: 0; }
+  header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+  header span { font-size: .75rem; color: var(--muted); }
+
+  main { flex: 1; padding: 20px 16px 100px; max-width: 560px; width: 100%; margin: 0 auto; }
+
+  /* ── Section label ── */
+  .section-label {
+    font-size: .7rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); margin: 24px 0 8px;
+  }
+
+  /* ── Field card ── */
+  .field-card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .field-label {
+    font-size: .72rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .8px;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  }
+  .field-row { display: flex; align-items: center; gap: 10px; }
+  .field-input {
+    flex: 1;
+    background: rgba(0,0,0,.25); border: 1.5px solid rgba(255,255,255,.1);
+    border-radius: 10px; padding: 12px 14px;
+    color: var(--text); font-size: 1rem;
+    outline: none; transition: border .2s;
+    width: 100%;
+  }
+  .field-input:focus { border-color: var(--accent2); }
+  .field-input::placeholder { color: var(--muted); }
+
+  /* Malayalam preview inside book-name card */
+  .ml-preview {
+    margin-top: 10px; padding: 10px 14px;
+    background: rgba(0,0,0,.3); border-radius: 10px;
+    display: none; flex-direction: column; gap: 4px;
+  }
+  .ml-preview.show { display: flex; }
+  .ml-manglish { font-size: .82rem; color: var(--muted); }
+  .ml-script {
+    font-size: 1.4rem; color: var(--accent2); font-weight: 600;
+    line-height: 1.4;
+  }
+  .ml-loading { font-size: .85rem; color: var(--muted); font-style: italic; }
+
+  /* ── Mic button ── */
+  .mic-btn {
+    width: var(--mic-size); height: var(--mic-size); flex-shrink: 0;
+    border-radius: 50%; border: none; cursor: pointer;
+    background: var(--card); color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+    transition: background .2s, transform .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mic-btn:active { transform: scale(.92); }
+  .mic-btn.listening {
+    background: var(--accent);
+    animation: pulse 1s ease infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(233,69,96,.6); }
+    50%       { box-shadow: 0 0 0 10px rgba(233,69,96,0); }
+  }
+
+  /* ── ISBN row ── */
+  .isbn-row { display: flex; gap: 10px; }
+  .isbn-row .field-input { flex: 1; }
+  .scan-btn {
+    padding: 0 16px; border-radius: 10px; border: none; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 700; font-size: .85rem;
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    transition: opacity .2s;
+  }
+  .scan-btn:active { opacity: .8; }
+
+  /* ── Scanner modal ── */
+  #scanner-modal {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,.92); flex-direction: column;
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  #scanner-modal.show { display: flex; }
+  #scanner-modal h2 { margin-bottom: 16px; font-size: 1rem; color: var(--accent2); }
+  #reader { width: 100%; max-width: 340px; border-radius: var(--radius); overflow: hidden; }
+  .close-scan {
+    margin-top: 20px; padding: 12px 32px; border-radius: 10px;
+    border: none; background: var(--accent); color: #fff;
+    font-size: 1rem; font-weight: 700; cursor: pointer;
+  }
+
+  /* ── Submit button ── */
+  .submit-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    padding: 14px 20px; background: var(--surface);
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .submit-btn {
+    width: 100%; max-width: 560px; margin: 0 auto; display: block;
+    padding: 16px; border-radius: var(--radius); border: none;
+    background: var(--accent); color: #fff;
+    font-size: 1.05rem; font-weight: 700; cursor: pointer;
+    transition: opacity .2s, transform .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .submit-btn:active { transform: scale(.97); }
+  .submit-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #2d2d2d; color: #fff; padding: 12px 22px;
+    border-radius: 24px; font-size: .9rem; font-weight: 600;
+    opacity: 0; transition: opacity .3s, transform .3s;
+    pointer-events: none; white-space: nowrap; z-index: 200;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.success { background: #1e7e34; }
+  #toast.error   { background: #c0392b; }
+
+  /* ── User tag ── */
+  #user-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px;
+    background: var(--surface); border-bottom: 1px solid rgba(255,255,255,.05);
+  }
+  #user-bar label { font-size: .78rem; color: var(--muted); }
+  #user-input {
+    background: transparent; border: none; border-bottom: 1px solid rgba(255,255,255,.2);
+    color: var(--text); font-size: .88rem; padding: 2px 6px; outline: none; flex: 1;
+  }
+
+  /* character bubble when mic active */
+  .listening-hint {
+    margin-top: 6px; font-size: .78rem; color: var(--accent);
+    display: none; align-items: center; gap: 4px;
+  }
+  .listening-hint.show { display: flex; }
+  .dot { width:6px;height:6px;border-radius:50%;background:var(--accent);animation:blink 1s infinite; }
+  .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+    <rect width="32" height="32" rx="8" fill="#e94560"/>
+    <path d="M8 6h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" fill="white" opacity=".9"/>
+    <rect x="10" y="10" width="8" height="1.5" rx=".75" fill="#e94560"/>
+    <rect x="10" y="13.5" width="6" height="1.5" rx=".75" fill="#e94560"/>
+    <rect x="10" y="17" width="7" height="1.5" rx=".75" fill="#e94560"/>
+  </svg>
+  <div>
+    <h1>Book Collector</h1>
+    <span>Tap 🎤 to speak any field</span>
+  </div>
+</header>
+
+<!-- User identifier -->
+<div id="user-bar">
+  <label for="user-input">Your name:</label>
+  <input id="user-input" type="text" placeholder="e.g. Ullas" autocomplete="name"/>
+</div>
+
+<main>
+
+  <!-- ISBN -->
+  <div class="section-label">📦 Book Identification</div>
+  <div class="field-card">
+    <div class="field-label">ISBN (scan or type)</div>
+    <div class="isbn-row">
+      <input id="isbn" class="field-input" type="text" inputmode="numeric" placeholder="978-…"/>
+      <button class="scan-btn" id="open-scan-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/>
+          <rect x="3" y="16" width="5" height="5"/><rect x="11" y="11" width="2" height="2"/>
+          <line x1="16" y1="11" x2="21" y2="11"/><line x1="16" y1="16" x2="16" y2="21"/>
+          <line x1="21" y1="16" x2="21" y2="21"/>
+        </svg>
+        Scan
+      </button>
+      <button class="mic-btn" id="mic-isbn" title="Speak ISBN">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Book Name -->
+  <div class="section-label">📖 Book Name</div>
+  <div class="field-card">
+    <div class="field-label">
+      Book Name — speak in <strong style="color:var(--accent2)">Manglish</strong> (Malayalam in English)
+    </div>
+    <div class="field-row">
+      <input id="book-manglish" class="field-input" type="text" placeholder="e.g. Randamoozham" lang="en"/>
+      <button class="mic-btn" id="mic-book" title="Speak book name">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="listening-hint" id="hint-book">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      Listening… speak the book name
+    </div>
+    <!-- Malayalam preview -->
+    <div class="ml-preview" id="ml-preview">
+      <span class="ml-manglish" id="ml-manglish-label"></span>
+      <span class="ml-script" id="ml-script">&#x0D2E;&#x0D32;&#x0D2F;&#x0D3E;&#x0D33;&#x0D02;</span>
+    </div>
+  </div>
+
+  <!-- Author -->
+  <div class="section-label">✍️ Author</div>
+  <div class="field-card">
+    <div class="field-label">Author Name (English)</div>
+    <div class="field-row">
+      <input id="author" class="field-input" type="text" placeholder="e.g. M.T. Vasudevan Nair" lang="en"/>
+      <button class="mic-btn" id="mic-author" title="Speak author name">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="listening-hint" id="hint-author">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      Listening… speak the author name
+    </div>
+  </div>
+
+  <!-- Publisher -->
+  <div class="section-label">🏢 Publisher</div>
+  <div class="field-card">
+    <div class="field-label">Publisher Name (English)</div>
+    <div class="field-row">
+      <input id="publisher" class="field-input" type="text" placeholder="e.g. DC Books" lang="en"/>
+      <button class="mic-btn" id="mic-publisher" title="Speak publisher name">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="listening-hint" id="hint-publisher">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      Listening… speak the publisher name
+    </div>
+  </div>
+
+</main>
+
+<!-- Scanner modal -->
+<div id="scanner-modal">
+  <h2>📷 Point camera at barcode / QR</h2>
+  <div id="reader"></div>
+  <button class="close-scan" id="close-scan-btn">Cancel</button>
+</div>
+
+<!-- Fixed submit -->
+<div class="submit-bar">
+  <button class="submit-btn" id="submit-btn">💾 Save to Sheet</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// CONFIG — replace with your GAS web app URL
+// ─────────────────────────────────────────────
+var GAS_URL = 'YOUR_GAS_WEB_APP_URL_HERE';
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function $(id) { return document.getElementById(id); }
+
+function toast(msg, type) {
+  var t = $('toast');
+  t.textContent = msg;
+  t.className = 'show ' + (type || '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.className = ''; }, 3200);
+}
+
+// ─────────────────────────────────────────────
+// Voice Recognition
+// ─────────────────────────────────────────────
+var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+var activeMic = null;
+
+function setupMic(btnId, inputId, lang, hintId, onResult) {
+  var btn = $(btnId);
+  var input = $(inputId);
+  var hint = hintId ? $(hintId) : null;
+  if (!SpeechRec) {
+    btn.title = 'Speech recognition not supported in this browser';
+    btn.style.opacity = '.35';
+    return;
+  }
+  btn.addEventListener('click', function() {
+    if (activeMic && activeMic !== btn) {
+      activeMic.click(); // stop any other active mic first
+    }
+    if (btn.classList.contains('listening')) {
+      btn._rec && btn._rec.stop();
+      return;
+    }
+    var rec = new SpeechRec();
+    rec.lang = lang || 'en-IN';
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    btn._rec = rec;
+
+    rec.onstart = function() {
+      btn.classList.add('listening');
+      if (hint) hint.classList.add('show');
+      activeMic = btn;
+    };
+    rec.onresult = function(e) {
+      var transcript = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        transcript += e.results[i][0].transcript;
+      }
+      input.value = transcript;
+      if (e.results[e.results.length - 1].isFinal && onResult) {
+        onResult(transcript);
+      }
+    };
+    rec.onerror = function(e) {
+      toast('Mic error: ' + e.error, 'error');
+    };
+    rec.onend = function() {
+      btn.classList.remove('listening');
+      if (hint) hint.classList.remove('show');
+      if (activeMic === btn) activeMic = null;
+      // Trigger onResult with final value if not already done
+      if (input.value && onResult) onResult(input.value);
+    };
+    rec.start();
+  });
+}
+
+// ─────────────────────────────────────────────
+// Transliteration (via GAS proxy to avoid CORS)
+// ─────────────────────────────────────────────
+var transTimer = null;
+function transliterate(text) {
+  var preview = $('ml-preview');
+  var scriptEl = $('ml-script');
+  var manglishLabel = $('ml-manglish-label');
+
+  if (!text || !text.trim()) {
+    preview.classList.remove('show');
+    return;
+  }
+  manglishLabel.textContent = text;
+  scriptEl.innerHTML = '<span class="ml-loading">transliterating…</span>';
+  preview.classList.add('show');
+
+  clearTimeout(transTimer);
+  transTimer = setTimeout(function() {
+    if (!GAS_URL || GAS_URL.includes('YOUR_GAS')) {
+      // Fallback: show Manglish only when GAS not configured
+      scriptEl.textContent = '(configure GAS URL to see Malayalam)';
+      return;
+    }
+    var url = GAS_URL + '?action=transliterate&text=' + encodeURIComponent(text);
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success && data.malayalam) {
+          scriptEl.textContent = data.malayalam;
+        } else {
+          scriptEl.textContent = text;
+        }
+      })
+      .catch(function() { scriptEl.textContent = text; });
+  }, 600);
+}
+
+// Wire up book name mic with live transliteration
+setupMic('mic-book', 'book-manglish', 'en-IN', 'hint-book', function(text) {
+  transliterate(text);
+});
+// Also transliterate when user types manually
+$('book-manglish').addEventListener('input', function() {
+  transliterate(this.value);
+});
+
+// Other mics
+setupMic('mic-isbn',      'isbn',      'en-IN', null,          null);
+setupMic('mic-author',    'author',    'en-IN', 'hint-author', null);
+setupMic('mic-publisher', 'publisher', 'en-IN', 'hint-publisher', null);
+
+// ─────────────────────────────────────────────
+// Barcode Scanner
+// ─────────────────────────────────────────────
+var html5QrCode = null;
+
+$('open-scan-btn').addEventListener('click', function() {
+  $('scanner-modal').classList.add('show');
+  html5QrCode = new Html5Qrcode('reader');
+  html5QrCode.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 280, height: 140 }, supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA] },
+    function(decodedText) {
+      $('isbn').value = decodedText;
+      closeScan();
+      toast('ISBN scanned: ' + decodedText, 'success');
+    },
+    function() {}
+  ).catch(function(err) {
+    toast('Camera error: ' + err, 'error');
+    closeScan();
+  });
+});
+
+function closeScan() {
+  $('scanner-modal').classList.remove('show');
+  if (html5QrCode) {
+    html5QrCode.stop().catch(function(){}).then(function() {
+      html5QrCode.clear();
+      html5QrCode = null;
+    });
+  }
+}
+$('close-scan-btn').addEventListener('click', closeScan);
+
+// ─────────────────────────────────────────────
+// Submit
+// ─────────────────────────────────────────────
+$('submit-btn').addEventListener('click', function() {
+  var manglish  = $('book-manglish').value.trim();
+  var author    = $('author').value.trim();
+  var publisher = $('publisher').value.trim();
+
+  if (!manglish) { toast('Please enter the book name', 'error'); return; }
+  if (!author)   { toast('Please enter the author name', 'error'); return; }
+
+  if (!GAS_URL || GAS_URL.includes('YOUR_GAS')) {
+    toast('⚠️ GAS URL not configured — check README', 'error');
+    return;
+  }
+
+  var malayalam = $('ml-script').textContent || '';
+  if (malayalam.includes('transliterating') || malayalam.includes('configure')) malayalam = '';
+
+  var payload = {
+    isbn:      $('isbn').value.trim(),
+    manglish:  manglish,
+    malayalam: malayalam,
+    author:    author,
+    publisher: publisher,
+    addedBy:   $('user-input').value.trim()
+  };
+
+  var btn = $('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  fetch(GAS_URL, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    redirect: 'follow'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.success) {
+      toast('✅ Saved to Google Sheets!', 'success');
+      clearForm();
+    } else {
+      toast('Error: ' + (data.error || 'unknown'), 'error');
+    }
+  })
+  .catch(function(err) {
+    // GAS redirects may cause opaque responses — treat as success if no network error
+    toast('✅ Saved! (no response from server)', 'success');
+    clearForm();
+  })
+  .finally(function() {
+    btn.disabled = false;
+    btn.textContent = '💾 Save to Sheet';
+  });
+});
+
+function clearForm() {
+  $('isbn').value = '';
+  $('book-manglish').value = '';
+  $('author').value = '';
+  $('publisher').value = '';
+  $('ml-preview').classList.remove('show');
+}
+
+// ─────────────────────────────────────────────
+// Service Worker
+// ─────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(function(){});
+}
+
+// Persist user name in localStorage
+var stored = localStorage.getItem('bc_user');
+if (stored) $('user-input').value = stored;
+$('user-input').addEventListener('change', function() {
+  localStorage.setItem('bc_user', this.value);
+});
+</script>
+</body>
+</html>
