@@ -396,13 +396,89 @@ function mlToManglish(text) {
 }
 
 // ─────────────────────────────────────────────
+// iOS microphone permission primer
+// iOS Safari throws "service-not-allowed" on SpeechRecognition unless
+// getUserMedia has already been granted in the same browsing session.
+// We request it once (silently releasing the stream) before any mic use.
+// ─────────────────────────────────────────────
+var micReady = false; // flips true after getUserMedia succeeds
+
+function primeMic(then) {
+  if (micReady) { then(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    // Browser doesn't support getUserMedia — just try anyway
+    micReady = true; then(); return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(function(stream) {
+      // Immediately release tracks — we only needed the permission grant
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      micReady = true;
+      then();
+    })
+    .catch(function(err) {
+      // Permission denied by user
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        toast('🎤 Microphone access denied. Enable it in Settings → Safari → Microphone.', 'error');
+      } else {
+        toast('🎤 Mic unavailable: ' + err.message, 'error');
+      }
+    });
+}
+
+// ─────────────────────────────────────────────
 // Voice Recognition
-// lang: 'ml-IN' for book name (speaks Malayalam → gets script directly)
-//       'en-IN' for author/publisher (English names)
-// Appends to existing field value — does NOT clear on new press.
 // ─────────────────────────────────────────────
 var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 var activeMic = null;
+
+function startRec(btn, input, lang, hint, onResult) {
+  var rec = new SpeechRec();
+  rec.lang = lang || 'en-IN';
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+  btn._rec = rec;
+
+  var prefix = input.value ? input.value.trim() + ' ' : '';
+
+  rec.onstart = function() {
+    btn.classList.add('listening');
+    if (hint) hint.classList.add('show');
+    activeMic = btn;
+  };
+  rec.onresult = function(e) {
+    var transcript = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      transcript += e.results[i][0].transcript;
+    }
+    input.value = prefix + transcript;
+    if (e.results[e.results.length - 1].isFinal && onResult) {
+      onResult(prefix + transcript);
+    }
+  };
+  rec.onerror = function(e) {
+    btn.classList.remove('listening');
+    if (hint) hint.classList.remove('show');
+    if (activeMic === btn) activeMic = null;
+    var msg = e.error;
+    if (msg === 'not-allowed' || msg === 'service-not-allowed') {
+      toast('🎤 Mic blocked — go to Settings → Safari → Microphone and allow this site.', 'error');
+    } else if (msg === 'language-not-supported') {
+      toast('Malayalam voice not available on this device — type Manglish instead.', 'error');
+    } else if (msg === 'no-speech') {
+      toast('No speech detected — try again.', 'error');
+    } else {
+      toast('Mic error: ' + msg, 'error');
+    }
+  };
+  rec.onend = function() {
+    btn.classList.remove('listening');
+    if (hint) hint.classList.remove('show');
+    if (activeMic === btn) activeMic = null;
+    if (input.value && onResult) onResult(input.value);
+  };
+  try { rec.start(); } catch(e) { toast('Could not start mic: ' + e.message, 'error'); }
+}
 
 function setupMic(btnId, inputId, lang, hintId, onResult) {
   var btn   = $(btnId);
@@ -415,70 +491,31 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
   }
   btn.addEventListener('click', function() {
     if (activeMic && activeMic !== btn) { activeMic.click(); }
-    if (btn.classList.contains('listening')) {
-      btn._rec && btn._rec.stop();
-      return;
-    }
-    var rec = new SpeechRec();
-    rec.lang = lang || 'en-IN';
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-    btn._rec = rec;
-
-    // Snapshot what's already in the field — new speech appends after it
-    var prefix = input.value ? input.value.trim() + ' ' : '';
-
-    rec.onstart = function() {
-      btn.classList.add('listening');
-      if (hint) hint.classList.add('show');
-      activeMic = btn;
-    };
-    rec.onresult = function(e) {
-      var transcript = '';
-      for (var i = e.resultIndex; i < e.results.length; i++) {
-        transcript += e.results[i][0].transcript;
-      }
-      input.value = prefix + transcript;
-      if (e.results[e.results.length - 1].isFinal && onResult) {
-        onResult(prefix + transcript);
-      }
-    };
-    rec.onerror = function(e) { toast('Mic error: ' + e.error, 'error'); };
-    rec.onend = function() {
-      btn.classList.remove('listening');
-      if (hint) hint.classList.remove('show');
-      if (activeMic === btn) activeMic = null;
-      if (input.value && onResult) onResult(input.value);
-    };
-    rec.start();
+    if (btn.classList.contains('listening')) { btn._rec && btn._rec.stop(); return; }
+    primeMic(function() { startRec(btn, input, lang, hint, onResult); });
   });
 }
 
 // ─────────────────────────────────────────────
-// Book-name mic: ml-IN → Malayalam script directly,
-// then reverse-romanize to Manglish with our character map.
+// Book-name mic — ml-IN (speaks Malayalam → Unicode script directly).
+// Falls back to en-IN + Google Input Tools if ml-IN not supported.
 // ─────────────────────────────────────────────
 (function() {
   var btn   = $('mic-book');
-  var input = $('book-manglish'); // repurposed as display label; real value stays editable
+  var input = $('book-manglish');
   var hint  = $('hint-book');
   if (!SpeechRec) { btn.style.opacity = '.35'; return; }
 
-  btn.addEventListener('click', function() {
-    if (activeMic && activeMic !== btn) { activeMic.click(); }
-    if (btn.classList.contains('listening')) {
-      btn._rec && btn._rec.stop();
-      return;
-    }
+  function startBookMic(lang) {
     var rec = new SpeechRec();
-    // ml-IN → speech API returns Malayalam Unicode directly (no transliteration needed)
-    rec.lang = 'ml-IN';
+    rec.lang = lang;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     btn._rec = rec;
 
-    var prefix = input.value ? input.value.trim() + ' ' : '';
-    var mlPrefix = ($('ml-script').dataset.raw || '').trim();
+    var prefix    = input.value ? input.value.trim() + ' ' : '';
+    var mlPrefix  = ($('ml-script').dataset.raw || '').trim();
+    var isMalay   = (lang === 'ml-IN');
 
     rec.onstart = function() {
       btn.classList.add('listening');
@@ -486,23 +523,50 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
       activeMic = btn;
     };
     rec.onresult = function(e) {
-      var mlText = '';
+      var text = '';
       for (var i = e.resultIndex; i < e.results.length; i++) {
-        mlText += e.results[i][0].transcript;
+        text += e.results[i][0].transcript;
       }
-      var fullMl = mlPrefix ? mlPrefix + ' ' + mlText : mlText;
-      // Malayalam script → shown in the preview box
-      showMalayalam(fullMl);
-      // Manglish (romanized) → shown in the input
-      input.value = prefix + mlToManglish(mlText);
+      if (isMalay) {
+        // text is already Malayalam Unicode — display directly
+        var fullMl = mlPrefix ? mlPrefix + ' ' + text : text;
+        showMalayalam(fullMl);
+        input.value = prefix + mlToManglish(text);
+      } else {
+        // text is Manglish (en-IN fallback) — transliterate to Malayalam
+        input.value = prefix + text;
+        transliterateToML(prefix + text);
+      }
     };
-    rec.onerror = function(e) { toast('Mic error: ' + e.error, 'error'); };
+    rec.onerror = function(e) {
+      btn.classList.remove('listening');
+      hint.classList.remove('show');
+      if (activeMic === btn) activeMic = null;
+      var msg = e.error;
+      if ((msg === 'not-allowed' || msg === 'service-not-allowed')) {
+        toast('🎤 Mic blocked — Settings → Safari → Microphone → allow this site.', 'error');
+      } else if (msg === 'language-not-supported') {
+        // ml-IN not available on this device — retry in en-IN
+        toast('Malayalam voice not supported here, switching to English input…');
+        setTimeout(function() { startBookMic('en-IN'); }, 400);
+      } else if (msg === 'no-speech') {
+        toast('No speech detected — try again.');
+      } else {
+        toast('Mic error: ' + msg, 'error');
+      }
+    };
     rec.onend = function() {
       btn.classList.remove('listening');
       hint.classList.remove('show');
       if (activeMic === btn) activeMic = null;
     };
-    rec.start();
+    try { rec.start(); } catch(ex) { toast('Could not start mic: ' + ex.message, 'error'); }
+  }
+
+  btn.addEventListener('click', function() {
+    if (activeMic && activeMic !== btn) { activeMic.click(); }
+    if (btn.classList.contains('listening')) { btn._rec && btn._rec.stop(); return; }
+    primeMic(function() { startBookMic('ml-IN'); });
   });
 })();
 
@@ -519,12 +583,12 @@ function showMalayalam(mlText) {
 
 // Manual typing in Manglish box → transliterate via Google Input Tools
 var transTimer = null;
-$('book-manglish').addEventListener('input', function() {
-  var text = this.value.trim();
-  if (!text) { $('ml-preview').classList.remove('show'); return; }
+
+function transliterateToML(text) {
+  if (!text || !text.trim()) { $('ml-preview').classList.remove('show'); return; }
   clearTimeout(transTimer);
   transTimer = setTimeout(function() {
-    var words = text.split(/\s+/);
+    var words = text.trim().split(/\s+/);
     var promises = words.map(function(word) {
       var url = 'https://inputtools.google.com/request'
         + '?text=' + encodeURIComponent(word)
@@ -540,6 +604,10 @@ $('book-manglish').addEventListener('input', function() {
     });
     Promise.all(promises).then(function(parts) { showMalayalam(parts.join(' ')); });
   }, 500);
+}
+
+$('book-manglish').addEventListener('input', function() {
+  transliterateToML(this.value);
 });
 
 // Other field mics (English names — keep en-IN, append don't replace)
