@@ -497,8 +497,11 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
 }
 
 // ─────────────────────────────────────────────
-// Book-name mic — ml-IN (speaks Malayalam → Unicode script directly).
-// Falls back to en-IN + Google Input Tools if ml-IN not supported.
+// Book-name mic
+// Android Chrome supports ml-IN → returns Malayalam Unicode directly.
+// iOS Safari does NOT support ml-IN (throws service-not-allowed or
+// language-not-supported). On iOS we use en-IN and pipe the result
+// through Google Input Tools to get Malayalam.
 // ─────────────────────────────────────────────
 (function() {
   var btn   = $('mic-book');
@@ -506,67 +509,83 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
   var hint  = $('hint-book');
   if (!SpeechRec) { btn.style.opacity = '.35'; return; }
 
-  function startBookMic(lang) {
-    var rec = new SpeechRec();
-    rec.lang = lang;
-    rec.interimResults = true;
+  // Detect iOS — Safari on iPhone/iPad does not ship a Malayalam speech engine.
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  // mlINOK starts true on Android, false on iOS.
+  // Gets flipped to false permanently if ml-IN ever errors on this device.
+  var mlINOK = !isIOS;
+
+  function startBookMic() {
+    var lang    = mlINOK ? 'ml-IN' : 'en-IN';
+    var rec     = new SpeechRec();
+    rec.lang    = lang;
+    rec.interimResults  = true;
     rec.maxAlternatives = 1;
     btn._rec = rec;
 
-    var prefix    = input.value ? input.value.trim() + ' ' : '';
-    var mlPrefix  = ($('ml-script').dataset.raw || '').trim();
-    var isMalay   = (lang === 'ml-IN');
+    var prefix   = input.value ? input.value.trim() + ' ' : '';
+    var mlPrefix = ($('ml-script').dataset.raw || '').trim();
 
     rec.onstart = function() {
       btn.classList.add('listening');
       hint.classList.add('show');
       activeMic = btn;
     };
+
     rec.onresult = function(e) {
       var text = '';
       for (var i = e.resultIndex; i < e.results.length; i++) {
         text += e.results[i][0].transcript;
       }
-      if (isMalay) {
-        // text is already Malayalam Unicode — display directly
+      if (mlINOK) {
+        // Android ml-IN: result is already Malayalam Unicode
         var fullMl = mlPrefix ? mlPrefix + ' ' + text : text;
         showMalayalam(fullMl);
         input.value = prefix + mlToManglish(text);
       } else {
-        // text is Manglish (en-IN fallback) — transliterate to Malayalam
+        // iOS en-IN: result is Manglish/English — run through Input Tools
         input.value = prefix + text;
         transliterateToML(prefix + text);
       }
     };
+
     rec.onerror = function(e) {
       btn.classList.remove('listening');
       hint.classList.remove('show');
       if (activeMic === btn) activeMic = null;
       var msg = e.error;
-      if ((msg === 'not-allowed' || msg === 'service-not-allowed')) {
+
+      // ml-IN failed on this device (iOS returns service-not-allowed for unsupported langs)
+      if (mlINOK && (msg === 'service-not-allowed' || msg === 'language-not-supported' || msg === 'not-allowed')) {
+        mlINOK = false; // permanently switch to en-IN for this session
+        toast('Switching to English voice input — speak book name in Manglish.');
+        setTimeout(startBookMic, 300);
+        return;
+      }
+      // Real permission denial (en-IN also blocked)
+      if (msg === 'not-allowed' || msg === 'service-not-allowed') {
         toast('🎤 Mic blocked — Settings → Safari → Microphone → allow this site.', 'error');
-      } else if (msg === 'language-not-supported') {
-        // ml-IN not available on this device — retry in en-IN
-        toast('Malayalam voice not supported here, switching to English input…');
-        setTimeout(function() { startBookMic('en-IN'); }, 400);
       } else if (msg === 'no-speech') {
         toast('No speech detected — try again.');
       } else {
         toast('Mic error: ' + msg, 'error');
       }
     };
+
     rec.onend = function() {
       btn.classList.remove('listening');
       hint.classList.remove('show');
       if (activeMic === btn) activeMic = null;
     };
+
     try { rec.start(); } catch(ex) { toast('Could not start mic: ' + ex.message, 'error'); }
   }
 
   btn.addEventListener('click', function() {
     if (activeMic && activeMic !== btn) { activeMic.click(); }
     if (btn.classList.contains('listening')) { btn._rec && btn._rec.stop(); return; }
-    primeMic(function() { startBookMic('ml-IN'); });
+    primeMic(startBookMic);
   });
 })();
 

@@ -1,4 +1,4 @@
-const CACHE = 'book-collector-v5';
+const CACHE = 'book-collector-v6';
 const ASSETS = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', e => {
