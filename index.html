@@ -235,7 +235,7 @@
   <div class="section-label">📖 Book Name</div>
   <div class="field-card">
     <div class="field-label">
-      Book Name — speak in <strong style="color:var(--accent2)">Manglish</strong> (Malayalam in English)
+      Book Name — speak in <strong style="color:var(--accent2)">Malayalam</strong> (auto-converts to Manglish + script)
     </div>
     <div class="field-row">
       <input id="book-manglish" class="field-input" type="text" placeholder="e.g. Randamoozham" lang="en"/>
@@ -312,14 +312,8 @@
 <div id="toast"></div>
 
 <script>
-// ─────────────────────────────────────────────
-// CONFIG — replace with your GAS web app URL
-// ─────────────────────────────────────────────
 var GAS_URL = 'https://script.google.com/macros/s/AKfycbwmxyS-4xcf3oYZxmWGNqoeaDURorRo0t5IYEezbc8RFsQ2-u4po-Pp2JYFTw9RoBEi/exec';
 
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
 function toast(msg, type) {
@@ -331,24 +325,96 @@ function toast(msg, type) {
 }
 
 // ─────────────────────────────────────────────
+// Malayalam Unicode → Manglish romanizer
+// Used after ml-IN speech recognition returns Malayalam script.
+// ─────────────────────────────────────────────
+var ML_VOWELS = {
+  'അ':'a','ആ':'aa','ഇ':'i','ഈ':'ee','ഉ':'u','ഊ':'oo',
+  'എ':'e','ഏ':'ee','ഐ':'ai','ഒ':'o','ഓ':'oo','ഔ':'au','ഋ':'ri'
+};
+var ML_VOWEL_SIGNS = {
+  'ാ':'aa','ി':'i','ീ':'ee','ു':'u','ൂ':'oo','ൃ':'ri',
+  'െ':'e','േ':'ee','ൈ':'ai','ൊ':'o','ോ':'oo','ൌ':'au','ൗ':'au'
+};
+// Consonants — stored without their inherent 'a' (virama removes it)
+var ML_CONS = {
+  'ക':'k','ഖ':'kh','ഗ':'g','ഘ':'gh','ങ':'ng',
+  'ച':'ch','ഛ':'chh','ജ':'j','ഝ':'jh','ഞ':'nj',
+  'ട':'t','ഠ':'tt','ഡ':'d','ഢ':'dd','ണ':'n',
+  'ത':'th','ഥ':'thh','ദ':'d','ധ':'dh','ന':'n',
+  'പ':'p','ഫ':'ph','ബ':'b','ഭ':'bh','മ':'m',
+  'യ':'y','ര':'r','ല':'l','വ':'v',
+  'ശ':'sh','ഷ':'sh','സ':'s','ഹ':'h',
+  'ള':'l','ഴ':'zh','റ':'r',
+  // chillu (stand-alone final consonants)
+  'ൺ':'n','ൻ':'n','ർ':'r','ൽ':'l','ൾ':'l','ൿ':'k'
+};
+var VIRAMA = '്'; // ്
+var ANUSVARA = 'ം'; // ം
+var VISARGA  = 'ഃ'; // ഃ
+var ZWNJ     = '‌';
+var ZWJ      = '‍';
+
+function mlToManglish(text) {
+  if (!text) return '';
+  var out = '';
+  var chars = Array.from(text); // handles surrogate pairs / combining chars
+  var i = 0;
+  while (i < chars.length) {
+    var c = chars[i];
+    if (c === ' ' || c === '\n') { out += c; i++; continue; }
+    if (c === ZWNJ || c === ZWJ) { i++; continue; }
+    if (c === ANUSVARA) { out += 'm'; i++; continue; }
+    if (c === VISARGA)  { out += 'h'; i++; continue; }
+    if (ML_VOWELS[c]) { out += ML_VOWELS[c]; i++; continue; }
+    if (ML_CONS[c]) {
+      var base = ML_CONS[c];
+      var next = chars[i + 1];
+      if (next === VIRAMA) {
+        // No inherent vowel — consonant only
+        out += base;
+        i += 2;
+        // skip ZWJ/ZWNJ after virama
+        while (chars[i] === ZWJ || chars[i] === ZWNJ) i++;
+        continue;
+      }
+      if (next && ML_VOWEL_SIGNS[next]) {
+        out += base + ML_VOWEL_SIGNS[next];
+        i += 2;
+        continue;
+      }
+      // Inherent vowel 'a'
+      out += base + 'a';
+      i++;
+      continue;
+    }
+    // Pass through anything else (digits, punctuation, Latin)
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────
 // Voice Recognition
+// lang: 'ml-IN' for book name (speaks Malayalam → gets script directly)
+//       'en-IN' for author/publisher (English names)
+// Appends to existing field value — does NOT clear on new press.
 // ─────────────────────────────────────────────
 var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 var activeMic = null;
 
 function setupMic(btnId, inputId, lang, hintId, onResult) {
-  var btn = $(btnId);
+  var btn   = $(btnId);
   var input = $(inputId);
-  var hint = hintId ? $(hintId) : null;
+  var hint  = hintId ? $(hintId) : null;
   if (!SpeechRec) {
-    btn.title = 'Speech recognition not supported in this browser';
+    btn.title = 'Speech not supported in this browser';
     btn.style.opacity = '.35';
     return;
   }
   btn.addEventListener('click', function() {
-    if (activeMic && activeMic !== btn) {
-      activeMic.click(); // stop any other active mic first
-    }
+    if (activeMic && activeMic !== btn) { activeMic.click(); }
     if (btn.classList.contains('listening')) {
       btn._rec && btn._rec.stop();
       return;
@@ -358,6 +424,9 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     btn._rec = rec;
+
+    // Snapshot what's already in the field — new speech appends after it
+    var prefix = input.value ? input.value.trim() + ' ' : '';
 
     rec.onstart = function() {
       btn.classList.add('listening');
@@ -369,19 +438,16 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
       for (var i = e.resultIndex; i < e.results.length; i++) {
         transcript += e.results[i][0].transcript;
       }
-      input.value = transcript;
+      input.value = prefix + transcript;
       if (e.results[e.results.length - 1].isFinal && onResult) {
-        onResult(transcript);
+        onResult(prefix + transcript);
       }
     };
-    rec.onerror = function(e) {
-      toast('Mic error: ' + e.error, 'error');
-    };
+    rec.onerror = function(e) { toast('Mic error: ' + e.error, 'error'); };
     rec.onend = function() {
       btn.classList.remove('listening');
       if (hint) hint.classList.remove('show');
       if (activeMic === btn) activeMic = null;
-      // Trigger onResult with final value if not already done
       if (input.value && onResult) onResult(input.value);
     };
     rec.start();
@@ -389,29 +455,76 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
 }
 
 // ─────────────────────────────────────────────
-// Transliteration (via GAS proxy to avoid CORS)
+// Book-name mic: ml-IN → Malayalam script directly,
+// then reverse-romanize to Manglish with our character map.
 // ─────────────────────────────────────────────
-var transTimer = null;
-// Calls Google Input Tools directly — the same engine powering Google's Malayalam keyboard.
-// itc=ml-t-i0-und  →  Malayalam transliteration (Manglish in, Malayalam script out)
-// num=5 returns up to 5 candidates; we pick the best (index 0).
-function transliterate(text) {
-  var preview = $('ml-preview');
+(function() {
+  var btn   = $('mic-book');
+  var input = $('book-manglish'); // repurposed as display label; real value stays editable
+  var hint  = $('hint-book');
+  if (!SpeechRec) { btn.style.opacity = '.35'; return; }
+
+  btn.addEventListener('click', function() {
+    if (activeMic && activeMic !== btn) { activeMic.click(); }
+    if (btn.classList.contains('listening')) {
+      btn._rec && btn._rec.stop();
+      return;
+    }
+    var rec = new SpeechRec();
+    // ml-IN → speech API returns Malayalam Unicode directly (no transliteration needed)
+    rec.lang = 'ml-IN';
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    btn._rec = rec;
+
+    var prefix = input.value ? input.value.trim() + ' ' : '';
+    var mlPrefix = ($('ml-script').dataset.raw || '').trim();
+
+    rec.onstart = function() {
+      btn.classList.add('listening');
+      hint.classList.add('show');
+      activeMic = btn;
+    };
+    rec.onresult = function(e) {
+      var mlText = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        mlText += e.results[i][0].transcript;
+      }
+      var fullMl = mlPrefix ? mlPrefix + ' ' + mlText : mlText;
+      // Malayalam script → shown in the preview box
+      showMalayalam(fullMl);
+      // Manglish (romanized) → shown in the input
+      input.value = prefix + mlToManglish(mlText);
+    };
+    rec.onerror = function(e) { toast('Mic error: ' + e.error, 'error'); };
+    rec.onend = function() {
+      btn.classList.remove('listening');
+      hint.classList.remove('show');
+      if (activeMic === btn) activeMic = null;
+    };
+    rec.start();
+  });
+})();
+
+function showMalayalam(mlText) {
+  var preview  = $('ml-preview');
   var scriptEl = $('ml-script');
-  var manglishLabel = $('ml-manglish-label');
-
-  if (!text || !text.trim()) {
-    preview.classList.remove('show');
-    return;
-  }
-  manglishLabel.textContent = text;
-  scriptEl.innerHTML = '<span class="ml-loading">transliterating…</span>';
+  var label    = $('ml-manglish-label');
+  if (!mlText || !mlText.trim()) { preview.classList.remove('show'); return; }
+  scriptEl.textContent = mlText;
+  scriptEl.dataset.raw = mlText; // store for appending on next mic press
+  label.textContent = mlToManglish(mlText);
   preview.classList.add('show');
+}
 
+// Manual typing in Manglish box → transliterate via Google Input Tools
+var transTimer = null;
+$('book-manglish').addEventListener('input', function() {
+  var text = this.value.trim();
+  if (!text) { $('ml-preview').classList.remove('show'); return; }
   clearTimeout(transTimer);
   transTimer = setTimeout(function() {
-    // Split on spaces so each word gets its own best transliteration
-    var words = text.trim().split(/\s+/);
+    var words = text.split(/\s+/);
     var promises = words.map(function(word) {
       var url = 'https://inputtools.google.com/request'
         + '?text=' + encodeURIComponent(word)
@@ -419,34 +532,53 @@ function transliterate(text) {
       return fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(json) {
-          // Shape: ["SUCCESS", [["word", ["cand0","cand1",...]]]]
-          if (json[0] === 'SUCCESS' && json[1] && json[1][0] && json[1][0][1] && json[1][0][1][0]) {
+          if (json[0]==='SUCCESS' && json[1] && json[1][0] && json[1][0][1] && json[1][0][1][0])
             return json[1][0][1][0];
-          }
           return word;
         })
         .catch(function() { return word; });
     });
-
-    Promise.all(promises).then(function(parts) {
-      scriptEl.textContent = parts.join(' ');
-    });
+    Promise.all(promises).then(function(parts) { showMalayalam(parts.join(' ')); });
   }, 500);
+});
+
+// Other field mics (English names — keep en-IN, append don't replace)
+setupMic('mic-isbn',      'isbn',      'en-IN', null,             null);
+setupMic('mic-author',    'author',    'en-IN', 'hint-author',    null);
+setupMic('mic-publisher', 'publisher', 'en-IN', 'hint-publisher', null);
+
+// ─────────────────────────────────────────────
+// ISBN → auto-fill via Google Books API
+// ─────────────────────────────────────────────
+function lookupISBN(isbn) {
+  isbn = isbn.replace(/[^0-9X]/gi, '');
+  if (isbn.length < 10) return;
+  toast('Looking up ISBN…');
+  fetch('https://www.googleapis.com/books/v1/volumes?q=isbn:' + isbn)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.items || !data.items.length) { toast('No book found for this ISBN', 'error'); return; }
+      var info = data.items[0].volumeInfo;
+      var title     = info.title || '';
+      var authors   = (info.authors || []).join(', ');
+      var publisher = info.publisher || '';
+
+      if (title && !$('book-manglish').value) {
+        $('book-manglish').value = title;
+        // Trigger transliteration for the fetched title
+        $('book-manglish').dispatchEvent(new Event('input'));
+      }
+      if (authors   && !$('author').value)    $('author').value    = authors;
+      if (publisher && !$('publisher').value) $('publisher').value = publisher;
+
+      toast('✅ Book details filled from ISBN', 'success');
+    })
+    .catch(function() { toast('ISBN lookup failed', 'error'); });
 }
 
-// Wire up book name mic with live transliteration
-setupMic('mic-book', 'book-manglish', 'en-IN', 'hint-book', function(text) {
-  transliterate(text);
-});
-// Also transliterate when user types manually
-$('book-manglish').addEventListener('input', function() {
-  transliterate(this.value);
-});
-
-// Other mics
-setupMic('mic-isbn',      'isbn',      'en-IN', null,          null);
-setupMic('mic-author',    'author',    'en-IN', 'hint-author', null);
-setupMic('mic-publisher', 'publisher', 'en-IN', 'hint-publisher', null);
+// Trigger on scan and on manual entry (blur / Enter)
+$('isbn').addEventListener('blur',  function() { if (this.value) lookupISBN(this.value); });
+$('isbn').addEventListener('keydown', function(e) { if (e.key === 'Enter') lookupISBN(this.value); });
 
 // ─────────────────────────────────────────────
 // Barcode Scanner
@@ -462,7 +594,7 @@ $('open-scan-btn').addEventListener('click', function() {
     function(decodedText) {
       $('isbn').value = decodedText;
       closeScan();
-      toast('ISBN scanned: ' + decodedText, 'success');
+      lookupISBN(decodedText);
     },
     function() {}
   ).catch(function(err) {
@@ -488,12 +620,10 @@ $('close-scan-btn').addEventListener('click', closeScan);
 $('submit-btn').addEventListener('click', function() {
   var manglish  = $('book-manglish').value.trim();
   var author    = $('author').value.trim();
-  var publisher = $('publisher').value.trim();
-
   if (!manglish) { toast('Please enter the book name', 'error'); return; }
   if (!author)   { toast('Please enter the author name', 'error'); return; }
 
-  var malayalam = $('ml-script').textContent || '';
+  var malayalam = ($('ml-script').dataset.raw || $('ml-script').textContent || '').trim();
   if (malayalam.includes('transliterating')) malayalam = '';
 
   var payload = {
@@ -501,7 +631,7 @@ $('submit-btn').addEventListener('click', function() {
     manglish:  manglish,
     malayalam: malayalam,
     author:    author,
-    publisher: publisher,
+    publisher: $('publisher').value.trim(),
     addedBy:   $('user-input').value.trim()
   };
 
@@ -509,47 +639,32 @@ $('submit-btn').addEventListener('click', function() {
   btn.disabled = true;
   btn.textContent = 'Saving…';
 
-  fetch(GAS_URL, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    redirect: 'follow'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.success) {
-      toast('✅ Saved to Google Sheets!', 'success');
+  fetch(GAS_URL, { method: 'POST', body: JSON.stringify(payload), redirect: 'follow' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      toast(data.success ? '✅ Saved to Google Sheets!' : 'Error: ' + (data.error || 'unknown'),
+            data.success ? 'success' : 'error');
+      if (data.success) clearForm();
+    })
+    .catch(function() {
+      toast('✅ Saved! (server responded without JSON)', 'success');
       clearForm();
-    } else {
-      toast('Error: ' + (data.error || 'unknown'), 'error');
-    }
-  })
-  .catch(function(err) {
-    // GAS redirects may cause opaque responses — treat as success if no network error
-    toast('✅ Saved! (no response from server)', 'success');
-    clearForm();
-  })
-  .finally(function() {
-    btn.disabled = false;
-    btn.textContent = '💾 Save to Sheet';
-  });
+    })
+    .finally(function() { btn.disabled = false; btn.textContent = '💾 Save to Sheet'; });
 });
 
 function clearForm() {
-  $('isbn').value = '';
-  $('book-manglish').value = '';
-  $('author').value = '';
-  $('publisher').value = '';
+  ['isbn','book-manglish','author','publisher'].forEach(function(id) { $(id).value = ''; });
+  var s = $('ml-script'); s.textContent = ''; s.dataset.raw = '';
   $('ml-preview').classList.remove('show');
 }
 
 // ─────────────────────────────────────────────
-// Service Worker
+// Service Worker + user name persistence
 // ─────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(function(){});
 }
-
-// Persist user name in localStorage
 var stored = localStorage.getItem('bc_user');
 if (stored) $('user-input').value = stored;
 $('user-input').addEventListener('change', function() {
