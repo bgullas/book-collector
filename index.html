@@ -315,7 +315,7 @@
 // ─────────────────────────────────────────────
 // CONFIG — replace with your GAS web app URL
 // ─────────────────────────────────────────────
-var GAS_URL = 'YOUR_GAS_WEB_APP_URL_HERE';
+var GAS_URL = 'https://script.google.com/macros/s/AKfycbwmxyS-4xcf3oYZxmWGNqoeaDURorRo0t5IYEezbc8RFsQ2-u4po-Pp2JYFTw9RoBEi/exec';
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -392,6 +392,9 @@ function setupMic(btnId, inputId, lang, hintId, onResult) {
 // Transliteration (via GAS proxy to avoid CORS)
 // ─────────────────────────────────────────────
 var transTimer = null;
+// Calls Google Input Tools directly — the same engine powering Google's Malayalam keyboard.
+// itc=ml-t-i0-und  →  Malayalam transliteration (Manglish in, Malayalam script out)
+// num=5 returns up to 5 candidates; we pick the best (index 0).
 function transliterate(text) {
   var preview = $('ml-preview');
   var scriptEl = $('ml-script');
@@ -407,23 +410,28 @@ function transliterate(text) {
 
   clearTimeout(transTimer);
   transTimer = setTimeout(function() {
-    if (!GAS_URL || GAS_URL.includes('YOUR_GAS')) {
-      // Fallback: show Manglish only when GAS not configured
-      scriptEl.textContent = '(configure GAS URL to see Malayalam)';
-      return;
-    }
-    var url = GAS_URL + '?action=transliterate&text=' + encodeURIComponent(text);
-    fetch(url)
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.success && data.malayalam) {
-          scriptEl.textContent = data.malayalam;
-        } else {
-          scriptEl.textContent = text;
-        }
-      })
-      .catch(function() { scriptEl.textContent = text; });
-  }, 600);
+    // Split on spaces so each word gets its own best transliteration
+    var words = text.trim().split(/\s+/);
+    var promises = words.map(function(word) {
+      var url = 'https://inputtools.google.com/request'
+        + '?text=' + encodeURIComponent(word)
+        + '&itc=ml-t-i0-und&num=5&cp=0&cs=1&ie=utf-8&oe=utf-8';
+      return fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(json) {
+          // Shape: ["SUCCESS", [["word", ["cand0","cand1",...]]]]
+          if (json[0] === 'SUCCESS' && json[1] && json[1][0] && json[1][0][1] && json[1][0][1][0]) {
+            return json[1][0][1][0];
+          }
+          return word;
+        })
+        .catch(function() { return word; });
+    });
+
+    Promise.all(promises).then(function(parts) {
+      scriptEl.textContent = parts.join(' ');
+    });
+  }, 500);
 }
 
 // Wire up book name mic with live transliteration
@@ -485,13 +493,8 @@ $('submit-btn').addEventListener('click', function() {
   if (!manglish) { toast('Please enter the book name', 'error'); return; }
   if (!author)   { toast('Please enter the author name', 'error'); return; }
 
-  if (!GAS_URL || GAS_URL.includes('YOUR_GAS')) {
-    toast('⚠️ GAS URL not configured — check README', 'error');
-    return;
-  }
-
   var malayalam = $('ml-script').textContent || '';
-  if (malayalam.includes('transliterating') || malayalam.includes('configure')) malayalam = '';
+  if (malayalam.includes('transliterating')) malayalam = '';
 
   var payload = {
     isbn:      $('isbn').value.trim(),
